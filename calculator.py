@@ -891,41 +891,21 @@ def calculate_standard_shares(selected_heirs: List[Dict], ashlul_masalah_awal: i
 
 
 # ========== TAHAP 4: FINALISASI ==========
-def apply_aul_radd_inkisar(selected_heirs: List[Dict], ashlul_masalah_awal: int,
-                           is_gharrawain: bool, notes: List[str]) -> Tuple[int, str]:
-    """Menerapkan 'Aul, Radd, dan Inkisar untuk finalisasi."""
-    total_saham_final = sum(h.get('saham', 0) for h in selected_heirs)
-    ashlul_masalah_akhir = ashlul_masalah_awal
-    status = "Masalah 'Adilah (Pas)"
-    
-    if not is_gharrawain:
-        if round(total_saham_final) > ashlul_masalah_awal:
-            ashlul_masalah_akhir = int(round(total_saham_final))
-            status = f"Masalah 'Aul (naik dari {ashlul_masalah_awal} menjadi {ashlul_masalah_akhir})"
-        
-        elif round(total_saham_final) < ashlul_masalah_awal:
-            has_ashobah = any(h.get('is_ashobah') for h in selected_heirs)
-            
-            if not has_ashobah:
-                has_spouse = any(h['data'].name_id in ["Suami", "Istri"] for h in selected_heirs)
-                
-                if not has_spouse:
-                    ashlul_masalah_akhir = int(round(total_saham_final))
-                    status = f"Masalah Radd (turun dari {ashlul_masalah_awal} menjadi {ashlul_masalah_akhir})"
-                else:
-                    ashlul_masalah_akhir = apply_radd_with_spouse(selected_heirs, ashlul_masalah_awal)
-                    status = f"Masalah Radd (dengan Suami/Istri), AM Gabungan: {ashlul_masalah_akhir}"
-    
-    notes.append(status)
-    ashlul_masalah_akhir = apply_inkisar(selected_heirs, ashlul_masalah_akhir, notes)
-    
-    return ashlul_masalah_akhir, status
-
-
 def apply_radd_with_spouse(selected_heirs: List[Dict], ashlul_masalah_awal: int) -> int:
     """Menerapkan Radd ketika ada suami/istri."""
     spouse = next((h for h in selected_heirs if h['data'].name_id in ["Suami", "Istri"]), None)
-    radd_heirs = [h for h in selected_heirs if h != spouse]
+    
+    # PERBAIKAN: Filter hanya ahli waris yang TIDAK Mahjub
+    radd_heirs = [
+        h for h in selected_heirs 
+        if h != spouse 
+        and h.get('share_fraction_str', '') != 'Mahjub'  # ← TAMBAHKAN INI
+        and '/' in h.get('share_fraction_str', '')  # ← DAN INI untuk keamanan
+    ]
+    
+    # Jika tidak ada ahli waris untuk Radd, kembalikan AM awal
+    if not radd_heirs:
+        return ashlul_masalah_awal
     
     ashlul_masalah_spouse = Fraction(spouse['share_fraction_str'].split()[0]).denominator
     spouse['saham'] = 1
@@ -933,8 +913,7 @@ def apply_radd_with_spouse(selected_heirs: List[Dict], ashlul_masalah_awal: int)
     
     radd_denominators = sorted(list(set([
         Fraction(h['share_fraction_str'].split()[0]).denominator 
-        for h in radd_heirs 
-        if '/' in h['share_fraction_str']
+        for h in radd_heirs
     ])))
     ashlul_masalah_radd = math.lcm(*radd_denominators) if radd_denominators else 1
     
@@ -942,6 +921,10 @@ def apply_radd_with_spouse(selected_heirs: List[Dict], ashlul_masalah_awal: int)
         int(Fraction(h['share_fraction_str'].split()[0]) * ashlul_masalah_radd) 
         for h in radd_heirs
     )
+    
+    # Hindari division by zero
+    if total_saham_radd_group == 0:
+        return ashlul_masalah_awal
     
     common_divisor = math.gcd(remaining_saham_from_spouse_problem, total_saham_radd_group)
     multiplier_spouse_problem = total_saham_radd_group // common_divisor
@@ -958,34 +941,171 @@ def apply_radd_with_spouse(selected_heirs: List[Dict], ashlul_masalah_awal: int)
     return ashlul_masalah_akhir
 
 
+def apply_aul_radd_inkisar(selected_heirs: List[Dict], ashlul_masalah_awal: int,
+                           is_gharrawain: bool, notes: List[str]) -> Tuple[int, str]:
+    """Menerapkan 'Aul, Radd, dan Inkisar untuk finalisasi."""
+    
+    # Hitung total saham HANYA dari ahli waris yang TIDAK Mahjub
+    total_saham_final = sum(
+        h.get('saham', 0) for h in selected_heirs 
+        if h.get('share_fraction_str', '') != 'Mahjub'
+    )
+    
+    ashlul_masalah_akhir = ashlul_masalah_awal
+    status = "Masalah 'Adilah (Pas)"
+    
+    if not is_gharrawain:
+        # === KASUS 'AUL (NAIK) ===
+        if round(total_saham_final) > ashlul_masalah_awal:
+            ashlul_masalah_akhir = int(round(total_saham_final))
+            status = f"Masalah 'Aul (naik dari {ashlul_masalah_awal} menjadi {ashlul_masalah_akhir})"
+        
+        # === KASUS RADD (TURUN) ===
+        elif round(total_saham_final) < ashlul_masalah_awal:
+            # Cek apakah ada ashobah (selain yang Mahjub)
+            has_ashobah = any(
+                h.get('is_ashobah') 
+                for h in selected_heirs 
+                if h.get('share_fraction_str', '') != 'Mahjub'
+            )
+            
+            if not has_ashobah:
+                # Cek apakah ada suami/istri
+                has_spouse = any(
+                    h['data'].name_id in ["Suami", "Istri"] 
+                    for h in selected_heirs
+                    if h.get('share_fraction_str', '') != 'Mahjub'
+                )
+                
+                if not has_spouse:
+                    # Radd tanpa suami/istri: turunkan AM
+                    ashlul_masalah_akhir = int(round(total_saham_final))
+                    status = f"Masalah Radd (turun dari {ashlul_masalah_awal} menjadi {ashlul_masalah_akhir})"
+                else:
+                    # Radd dengan suami/istri: perhitungan khusus
+                    ashlul_masalah_akhir = apply_radd_with_spouse(selected_heirs, ashlul_masalah_awal)
+                    status = f"Masalah Radd (dengan Suami/Istri), AM Gabungan: {ashlul_masalah_akhir}"
+    
+    notes.append(status)
+    
+    # === INKISAR (TASHIH) ===
+    ashlul_masalah_akhir = apply_inkisar(selected_heirs, ashlul_masalah_akhir, notes)
+    
+    return ashlul_masalah_akhir, status
+
+
+def apply_radd_with_spouse(selected_heirs: List[Dict], ashlul_masalah_awal: int) -> int:
+    """Menerapkan Radd ketika ada suami/istri."""
+    
+    # Ambil suami/istri
+    spouse = next((
+        h for h in selected_heirs 
+        if h['data'].name_id in ["Suami", "Istri"]
+        and h.get('share_fraction_str', '') != 'Mahjub'
+    ), None)
+    
+    if not spouse:
+        return ashlul_masalah_awal
+    
+    # Ambil ahli waris Radd (yang bukan suami/istri dan tidak Mahjub)
+    radd_heirs = [
+        h for h in selected_heirs 
+        if h != spouse 
+        and h.get('share_fraction_str', '') != 'Mahjub'
+        and '/' in h.get('share_fraction_str', '')
+    ]
+    
+    # Jika tidak ada ahli waris Radd, kembalikan AM awal
+    if not radd_heirs:
+        return ashlul_masalah_awal
+    
+    # Hitung AM untuk masalah suami/istri
+    spouse_fraction = spouse['share_fraction_str'].split()[0]
+    ashlul_masalah_spouse = Fraction(spouse_fraction).denominator
+    spouse['saham'] = 1
+    remaining_saham_from_spouse_problem = ashlul_masalah_spouse - 1
+    
+    # Hitung AM untuk masalah Radd
+    radd_denominators = []
+    for h in radd_heirs:
+        frac_str = h['share_fraction_str'].split()[0]
+        denominator = Fraction(frac_str).denominator
+        radd_denominators.append(denominator)
+    
+    radd_denominators = sorted(list(set(radd_denominators)))
+    ashlul_masalah_radd = math.lcm(*radd_denominators) if radd_denominators else 1
+    
+    # Hitung total saham grup Radd
+    total_saham_radd_group = sum(
+        int(Fraction(h['share_fraction_str'].split()[0]) * ashlul_masalah_radd) 
+        for h in radd_heirs
+    )
+    
+    # Hindari division by zero
+    if total_saham_radd_group == 0:
+        return ashlul_masalah_awal
+    
+    # Hitung pengali untuk menggabungkan dua masalah
+    common_divisor = math.gcd(remaining_saham_from_spouse_problem, total_saham_radd_group)
+    multiplier_spouse_problem = total_saham_radd_group // common_divisor
+    multiplier_radd_problem = remaining_saham_from_spouse_problem // common_divisor
+    
+    # Hitung AM akhir
+    ashlul_masalah_akhir = ashlul_masalah_spouse * multiplier_spouse_problem
+    
+    # Update saham suami/istri
+    spouse['saham'] *= multiplier_spouse_problem
+    
+    # Update saham ahli waris Radd
+    for heir in radd_heirs:
+        frac_str = heir['share_fraction_str'].split()[0]
+        heir['saham'] = int(
+            Fraction(frac_str) * ashlul_masalah_radd
+        ) * multiplier_radd_problem
+    
+    return ashlul_masalah_akhir
+
+
 def apply_inkisar(selected_heirs: List[Dict], ashlul_masalah_akhir: int, 
                   notes: List[str]) -> int:
     """Menerapkan Inkisar (Tashihul Mas'alah) jika diperlukan."""
     from decimal import Decimal
     
+    # Cari kelompok yang perlu Inkisar (saham tidak habis dibagi jumlah)
     inkisar_groups = []
     for h in selected_heirs:
-        if h.get('saham', 0) > 0:
-            saham_decimal = Decimal(str(h['saham']))
+        # Skip yang Mahjub
+        if h.get('share_fraction_str', '') == 'Mahjub':
+            continue
+            
+        saham_val = h.get('saham', 0)
+        if saham_val > 0:
+            saham_decimal = Decimal(str(saham_val))
             quantity_decimal = Decimal(str(h['quantity']))
             
+            # Jika saham tidak habis dibagi quantity, butuh Inkisar
             if saham_decimal % quantity_decimal != 0:
                 inkisar_groups.append(h)
     
     if not inkisar_groups:
         return ashlul_masalah_akhir
     
+    # Hitung pengali untuk setiap kelompok
     multipliers = []
     for h in inkisar_groups:
         saham_val = h['saham']
+        
         if saham_val == int(saham_val):
+            # Saham adalah integer
             saham_int = int(saham_val)
             gcd_val = math.gcd(saham_int, h['quantity'])
             multipliers.append(h['quantity'] // gcd_val)
         else:
-            frac = Fraction(saham_val).limit_denominator()
+            # Saham adalah pecahan
+            frac = Fraction(saham_val).limit_denominator(1000)
             multipliers.append(frac.denominator)
     
+    # Hitung KPK dari semua pengali
     if multipliers:
         final_multiplier = multipliers[0]
         for m in multipliers[1:]:
@@ -998,9 +1118,12 @@ def apply_inkisar(selected_heirs: List[Dict], ashlul_masalah_akhir: int,
                 f"{ashlul_masalah_akhir * final_multiplier}"
             )
             
+            # Kalikan AM dengan pengali
             ashlul_masalah_akhir *= final_multiplier
+            
+            # Kalikan semua saham dengan pengali
             for heir in selected_heirs:
-                if heir.get('saham', 0) > 0:
+                if heir.get('saham', 0) > 0 and heir.get('share_fraction_str', '') != 'Mahjub':
                     heir['saham'] *= final_multiplier
     
     return ashlul_masalah_akhir

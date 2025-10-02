@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware # <-- TAMBAHKAN IMPORT INI
 
 import crud
 import gharqa
@@ -17,6 +18,18 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Kalkulator Faraidh - Zahrotul Faridhoh",
     description="API untuk perhitungan waris Islam berdasarkan kitab Zahrotul Faridhoh."
+)
+origins = [
+    "http://localhost",
+    "http://localhost:3000", # Alamat frontend Next.js kita
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Dependency untuk Sesi Database ---
