@@ -1,0 +1,16 @@
+# Lingkungan virtual Python
+venv/
+
+# File cache Python
+__pycache__/
+*.pyc
+
+# File environment yang berisi rahasia
+.env
+
+# Folder spesifik IDE/Editor
+.vscode/
+.idea/
+
+# Cache dari Pytest
+.pytest_cache/
