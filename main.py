@@ -4,11 +4,12 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 import crud
+import gharqa
 import models
 import schemas
 from database import SessionLocal, engine
 import calculator
-import munasakhot
+import munasakhot, mauquf
 
 # Membuat tabel di database (jika belum ada)
 models.Base.metadata.create_all(bind=engine)
@@ -72,3 +73,22 @@ def run_munasakhot_calculation(munasakhot_data: schemas.MunasakhotInput, db: Ses
     """
     result = munasakhot.solve_munasakhot(db, munasakhot_input=munasakhot_data)
     return result
+
+@app.post("/calculate/mafqud/", response_model=schemas.MauqufResult) # <-- Perbarui response_model
+def run_mafqud_calculation(mafqud_data: schemas.MafqudInput, db: Session = Depends(get_db)):
+    return mauquf.solve_mafqud(db, mafqud_input=mafqud_data)
+
+# ==> ENDPOINT BARU UNTUK KHUNTSA <==
+@app.post("/calculate/khuntsa/", response_model=schemas.MauqufResult)
+def run_khuntsa_calculation(khuntsa_data: schemas.KhuntsaInput, db: Session = Depends(get_db)):
+    return mauquf.solve_khuntsa(db, khuntsa_input=khuntsa_data)
+
+# ==> ENDPOINT BARU UNTUK HAML <==
+@app.post("/calculate/haml/", response_model=schemas.MauqufResult)
+def run_haml_calculation(haml_data: schemas.HamlInput, db: Session = Depends(get_db)):
+    return mauquf.solve_haml(db, haml_input=haml_data) # mafqud_input diganti haml_input jika ada error
+
+@app.post("/calculate/gharqa/")
+def run_gharqa_calculation(gharqa_data: schemas.GharqaInput, db: Session = Depends(get_db)):
+    """Endpoint untuk kasus kematian bersamaan (al-Gharqa)."""
+    return gharqa.solve_gharqa(db, gharqa_input=gharqa_data)
