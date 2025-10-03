@@ -1,0 +1,92 @@
+{
+  "زوج": [
+    {
+      "when": { "has_child_or_grandson": false },
+      "fraction": "1/2",
+      "reason_id": "ZJ-1",
+      "reason_text": "Tidak ada anak/cucu (walad atau ibn ibn)."
+    },
+    {
+      "when": { "has_child_or_grandson": true },
+      "fraction": "1/4",
+      "reason_id": "ZJ-2",
+      "reason_text": "Ada anak/cucu (walad atau ibn ibn)."
+    }
+  ],
+  "زوجة": [
+    {
+      "when": { "has_child_or_grandson": false },
+      "fraction": "1/4",
+      "reason_id": "ZA-1",
+      "reason_text": "Tidak ada anak/cucu."
+    },
+    {
+      "when": { "has_child_or_grandson": true },
+      "fraction": "1/8",
+      "reason_id": "ZA-2",
+      "reason_text": "Ada anak/cucu."
+    }
+  ],
+  "أم": [
+    {
+      "when": { "has_child_or_grandson": true },
+      "fraction": "1/6",
+      "reason_id": "UM-1",
+      "reason_text": "Ada anak/cucu."
+    },
+    {
+      "when": { "has_siblings_two_or_more": true, "has_child_or_grandson": false },
+      "fraction": "1/6",
+      "reason_id": "UM-2",
+      "reason_text": "Tidak ada anak, tetapi ada dua saudara atau lebih."
+    },
+    {
+      "when": { "has_child_or_grandson": false, "has_siblings_two_or_more": false },
+      "fraction": "1/3",
+      "reason_id": "UM-3",
+      "reason_text": "Tidak ada anak dan saudara < 2."
+    }
+  ],
+  "أب": [
+    {
+      "when": { "has_child_or_grandson": true },
+      "fraction": "1/6",
+      "reason_id": "AB-1",
+      "reason_text": "Ada anak/cucu; ayah mendapat 1/6 + sisanya karena ada."
+    },
+    {
+      "when": { "has_child_or_grandson": false },
+      "fraction": "asabah",
+      "reason_id": "AB-2",
+      "reason_text": "Tidak ada anak/cucu; ayah menjadi ‘ashabah (mengambil sisa)."
+    }
+  ],
+  "ابن": [
+    {
+      "when": {},
+      "fraction": "asabah",
+      "reason_id": "IBN-1",
+      "reason_text": "Anak laki-laki selalu ‘ashabah (mengambil sisa)."
+    }
+  ],
+  "بنت": [
+    {
+      "when": { "count": 1, "has_son": false },
+      "fraction": "1/2",
+      "reason_id": "BINT-1",
+      "reason_text": "Satu anak perempuan tanpa anak laki-laki."
+    },
+    {
+      "when": { "count_gte": 2, "has_son": false },
+      "fraction": "2/3",
+      "reason_id": "BINT-2",
+      "reason_text": "Dua atau lebih anak perempuan tanpa anak laki-laki."
+    },
+    {
+      "when": { "has_son": true },
+      "fraction": "asabah_ma_al_ghair",
+      "reason_id": "BINT-3",
+      "reason_text": "Bersama anak laki-laki: ‘ashabah ma‘al ghair (2:1)."
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 # Di dalam file: main.py
 
 from fastapi import FastAPI, Depends, HTTPException
+from schemas import CalculationInput, CalculationResult
+from calculator import calculate_inheritance
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware # <-- TAMBAHKAN IMPORT INI
 
@@ -32,6 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.post("/calculate", response_model=CalculationResult)
+def api_calculate(payload: CalculationInput):
+    return calculate(payload)
 # --- Dependency untuk Sesi Database ---
 # Ini adalah cara standar FastAPI untuk mengelola koneksi database per permintaan
 def get_db():

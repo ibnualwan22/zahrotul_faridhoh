@@ -38,11 +38,11 @@ FEMALE_SIBLING_NAMES = [
 
 def lcm(a: int, b: int) -> int:
     """
-    Menghitung Least Common Multiple (KPK) dari dua bilangan.
+    Menghitung Least Common Multiple (KPK) dari dua karenangan.
     
     Args:
-        a: Bilangan pertama
-        b: Bilangan kedua
+        a: karenangan pertama
+        b: karenangan kedua
     
     Returns:
         KPK dari a dan b
