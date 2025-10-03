@@ -1,7 +1,8 @@
 # calculator.py
 
 from __future__ import annotations
-from typing import Dict, List, Tuple
+from typing import List, Dict
+from fractions import Fraction
 from math import gcd
 
 from sqlalchemy.orm import Session
@@ -10,113 +11,53 @@ import crud
 import schemas
 from app.rules.engine import determine_furudh
 from app.math.ashl import compute_ashl
+from app.special.router import apply_special_cases
 
-# --------------------------
-# AUL yang sah (kitab)
-# --------------------------
-VALID_AUL = {
-    6: {7, 8, 9, 10},
-    12: {13, 15, 17},
-    24: {27},
-}
 
-# --------------------------
-# Helper umum
-# --------------------------
+# =========================
+# Util kecil
+# =========================
+MALE_ASABAH_IDS = {1, 5, 2, 6, 7, 8, 10, 11, 12, 13, 14, 15}
+FEMALE_ASABAH_IDS = {16, 17, 21, 22}
+
 def _lcm(a: int, b: int) -> int:
-    return a // gcd(a, b) * b if a and b else a or b
+    return abs(a * b) // gcd(a, b) if a and b else 0
 
-def _relation(a: int, b: int) -> str:
-    if a == b:
-        return "mumatsalah"
-    if a % b == 0 or b % a == 0:
-        return "mudakholah"
-    g = gcd(a, b)
-    return "mubayanah" if g == 1 else "muwafaqoh"
+def _is_male_asabah_id(hid: int) -> bool:
+    return hid in MALE_ASABAH_IDS
 
-def _is_group_two_thirds(item) -> bool:
-    """
-    True bila item adalah kelompok yang mendapat 2/3 sebagai BAGIAN GOLONGAN:
-    - Anak Perempuan (>=2)
-    - Cucu Perempuan (>=2, tanpa anak perempuan)
-    - Saudari Kandung (>=2, syarat kitab)
-    - Saudari Seayah (>=2, syarat kitab)
-    """
-    return (
-        item.fraction == "2/3"
-        and item.heir.name_id in {"Anak Perempuan", "Cucu Perempuan", "Saudari Kandung", "Saudari Seayah"}
-        and item.quantity >= 2
-    )
-
-def _is_spouse(heir_id: int) -> bool:
-    # 3 = Suami, 4 = Istri (sinkron database)
-    return heir_id in {3, 4}
-
-def _is_male_asabah_id(heir_id: int) -> bool:
-    """
-    Laki-laki ‘ashabah untuk pembobotan 2:1 (sinkron ID dengan engine/DB)
-    """
-    return heir_id in {
-        1,   # Anak Laki-laki
-        5,   # Cucu Laki-laki (dari anak laki-laki)
-        2,   # Ayah
-        6,   # Kakek
-        7,   # Saudara Laki-laki Kandung
-        8,   # Saudara Laki-laki Seayah
-        10,  # Keponakan Laki-laki (sdr lk kandung)
-        11,  # Keponakan Laki-laki (sdr lk seayah)
-        12,  # Paman Kandung
-        13,  # Paman Seayah
-        14,  # Sepupu Laki-laki (paman kandung)
-        15,  # Sepupu Laki-laki (paman seayah)
-        24,  # Pria Pembebas Budak
-    }
-# === Helper: tampilkan ahli waris yang MAHJŪB (terhalang) ===
-def _append_mahjub_shares(db, heirs_input, furudh_items, notes):
-    """
-    Kembalikan list HeirShare bernilai 0 untuk ahli waris yang dikirim di request
-    tetapi tidak muncul di furudh_items (artinya mahjūb/terhalang).
-    """
-    shares_mahjub = []
-
-    # id-id yang sudah mendapatkan bagian (furūdh/ashabah)
+def _append_mahjub_shares(db: Session, heirs_input: List[schemas.Heir], furudh_items: List[schemas.FurudhItem], notes: List[str]) -> List[schemas.HeirShare]:
+    """Tambahkan ke output: ahli waris yang hadir di request tapi mahjūb (tidak muncul di furudh_items)."""
+    shares_mahjub: List[schemas.HeirShare] = []
     already_listed_ids = {f.heir.id for f in furudh_items}
 
-    # deteksi penyebab hijab yang paling umum untuk keterangan
     present_ids = {h.id for h in heirs_input}
-    has_son_or_grandson = (1 in present_ids) or (5 in present_ids)     # Anak Lk / Cucu Lk (dr anak lk)
+    has_son_or_grandson = (1 in present_ids) or (5 in present_ids)
     has_father_or_grandfather = (2 in present_ids) or (6 in present_ids)
 
-    # fungsi ambil metadata Heir dari DB bila perlu
-    def _get_heir_meta(hid):
-        # kalau sudah ada di furudh_items, ambil dari sana (lebih cepat)
+    def _get_heir_meta(hid: int) -> schemas.Heir:
         for f in furudh_items:
             if f.heir.id == hid:
                 return f.heir
-        # fallback: ambil dari DB
-        heir_row = None
+        meta = None
         if hasattr(crud, "get_heir_by_id"):
-            heir_row = crud.get_heir_by_id(db, hid)
+            meta = crud.get_heir_by_id(db, hid)
         else:
-            rows = crud.get_heirs_by_ids(db, [hid])  # return list
-            heir_row = rows[0] if rows else None
-        if heir_row:
-            return schemas.Heir(id=heir_row.id, name_id=heir_row.name_id, name_ar=heir_row.name_ar)
-        # fallback minimal
+            rows = crud.get_heirs_by_ids(db, [hid])
+            meta = rows[0] if rows else None
+        if meta:
+            return schemas.Heir(id=meta.id, name_id=meta.name_id, name_ar=meta.name_ar)
         return schemas.Heir(id=hid, name_id=f"ID {hid}", name_ar="-")
 
     for h in heirs_input:
         if h.id not in already_listed_ids:
             heir_meta = _get_heir_meta(h.id)
-
-            # alasan generik + sedikit konteks
             if has_son_or_grandson:
                 reason = "Mahjūb (terhalang) oleh keturunan laki-laki."
             elif has_father_or_grandfather:
                 reason = "Mahjūb (terhalang) oleh ayah/kakek."
             else:
                 reason = "Mahjūb (terhalang) menurut kaidah hijāb."
-
             notes.append(f"{heir_meta.name_id} mahjūb (terhalang).")
             shares_mahjub.append(
                 schemas.HeirShare(
@@ -131,244 +72,55 @@ def _append_mahjub_shares(db, heirs_input, furudh_items, notes):
     return shares_mahjub
 
 
-# --------------------------
-# Inkisār umum (tashīḥ ×k)
-# --------------------------
-def _apply_inkisar(AM_current: int,
-                   furudh_items: List[schemas.FurudhItem],
-                   saham_map: Dict[int, int],
-                   notes: List[str]) -> int:
+# =========================
+# Distribusi Ashobah Campur 2:1 (umum)
+# =========================
+def _distribute_ashobah_mixed(ashobah_items: List[schemas.FurudhItem], sisa: int,
+                              saham_map: Dict[int, int], notes: List[str]) -> None:
     """
-    Cek kelompok (quantity>1) yang sahamnya belum terbagi utuh → cari faktor tashīḥ ×k,
-    lalu kalikan AM & seluruh saham. Menambahkan catatan perbandingan (adad ar-ru'us vs saham).
-    Return AM baru (setelah dikali k).
+    Bagi sisa untuk kelompok Ashobah campur (2:1). Lakukan tashīḥ jika perlu.
     """
-    groups: List[Tuple[schemas.FurudhItem, int, int]] = []
+    male_heads = sum(2 * f.quantity for f in ashobah_items if f.heir.id in MALE_ASABAH_IDS)
+    female_heads = sum(1 * f.quantity for f in ashobah_items if f.heir.id in FEMALE_ASABAH_IDS)
+    total_heads = male_heads + female_heads
+    if total_heads <= 0 or sisa <= 0:
+        return
 
-    for f in furudh_items:
-        if f.fraction == "Ashobah" or f.quantity <= 1:
-            continue
-        # saham_map menyimpan TOTAL saham kelompok (untuk 2/3 = saham golongan; lainnya = per_orang × qty)
-        saham_kelompok = saham_map.get(f.heir.id, 0)
-        qty = f.quantity
-        if qty > 0 and saham_kelompok % qty != 0:
-            groups.append((f, saham_kelompok, qty))
-
-    if not groups:
-        return AM_current
-
-    # faktor tashīḥ minimal gabungan
-    k = 1
-    for _, saham_kelompok, qty in groups:
-        g = gcd(saham_kelompok, qty)
-        m = qty // g
-        k = _lcm(k, m)
-
-    # catatan perbandingan setiap kelompok
-    for f, saham_kelompok, qty in groups:
-        rel = _relation(saham_kelompok, qty)
-        notes.append(
-            f"Inkisār {f.heir.name_id}: عدد الرؤوس = {qty}, saham golongan = {saham_kelompok} → {rel} "
-            f"(gcd={gcd(saham_kelompok, qty)})"
-        )
-
+    # Tashīḥ apabila sisa tidak habis oleh total_heads
+    g = gcd(sisa, total_heads)
+    k = total_heads // g  # faktor tashīḥ
     if k > 1:
-        AM_before = AM_current
-        AM_current *= k
-        # kalikan semua saham
-        for hid in list(saham_map.keys()):
-            saham_map[hid] *= k
-        notes.append(f"Tashīḥ inkisār: ×{k}. Ashlul Mas’alah akhir: {AM_before} × {k} = {AM_current}")
-
-    return AM_current
-
-# --------------------------
-# Distribusi Ashobah campur (2:1) dengan tashīḥ jika perlu
-# --------------------------
-def _distribute_ashobah_mixed(ashl_info,
-                              ashobah_items: List[schemas.FurudhItem],
-                              sisa: int,
-                              saham_map: Dict[int, int],
-                              notes: List[str]) -> int:
-    """
-    Bagi sisa ke ashabah campur 2:1. Jika sisa tidak habis dibagi total bobot, lakukan tashīḥ AM & saham.
-    Return total saham tambahan yang dialokasikan.
-    """
-    if sisa <= 0 or not ashobah_items:
-        return 0
-
-    if len(ashobah_items) == 1:
-        f = ashobah_items[0]
-        saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + sisa
-        notes.append(f"{f.heir.name_id} mendapat sisa {sisa} saham sebagai Ashobah")
-        return sisa
-
-    # Campur
-    total_bobot = 0
-    bobot_per_heir: Dict[int, Tuple[int, int, int]] = {}
+        notes.append(f"Inkisār Ashobah: sisa = {sisa}, total bobot = {total_heads} → tashīḥ ×{k}.")
+        # Caller harus mengalikan AM juga; di sini kita hanya bagi proporsional.
+    # Distribusi proporsional (integer setelah tashīḥ)
     for f in ashobah_items:
-        wpc = 2 if _is_male_asabah_id(f.heir.id) else 1  # weight per capita
-        bobot = wpc * f.quantity
-        bobot_per_heir[f.heir.id] = (wpc, f.quantity, bobot)
-        total_bobot += bobot
-
-    # Tashīḥ bila sisa tidak habis oleh total_bobot
-    g = gcd(sisa, total_bobot)
-    k = total_bobot // g
-    if k > 1:
-        AM_before = ashl_info.ashl_akhir
-        # skala AM & saham yang sudah ada
-        for hid in list(saham_map.keys()):
-            saham_map[hid] *= k
-        sisa *= k
-        ashl_info.ashl_akhir *= k
-        notes.append(
-            f"Inkisār Ashobah: sisa = {sisa//k}, total bobot = {total_bobot} → tashīḥ ×{k}. "
-            f"Ashlul Mas’alah akhir: {AM_before} × {k} = {ashl_info.ashl_akhir}"
-        )
-
-    # Alokasi proporsional
-    tambahan = 0
-    for f in ashobah_items:
-        _, _, bobot = bobot_per_heir[f.heir.id]
-        bagian = (sisa * bobot) // total_bobot
+        w = 2 if f.heir.id in MALE_ASABAH_IDS else 1
+        bagian = (sisa * (w * f.quantity)) // total_heads
         saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + bagian
-        tambahan += bagian
+        if f.quantity > 1:
+            notes.append(f"{f.heir.name_id} ({f.quantity} orang) mendapat {bagian} saham dari sisa (Ashobah 2:1).")
+        else:
+            notes.append(f"{f.heir.name_id} mendapat {bagian} saham dari sisa (Ashobah 2:1).")
 
-    # catatan bobot
-    detail = []
-    for f in ashobah_items:
-        wpc, qty, bobot = bobot_per_heir[f.heir.id]
-        jenis = "laki-laki" if wpc == 2 else "perempuan"
-        detail.append(f"{f.heir.name_id} ({qty} {jenis}) → bobot {bobot}")
-    notes.append(f"Ashobah campur (2:1): total bobot = {total_bobot}; " + "; ".join(detail))
 
-    return tambahan
+# =========================
+# AUL Valid (opsional – bila kamu pakai tabel valid)
+# =========================
+VALID_AUL = {
+    6: [7, 8, 9, 10],
+    12: [13, 15, 17],
+    24: [27],
+}
+def _handle_aul(AM_awal: int, total_saham: int, notes: List[str]) -> int:
+    if AM_awal in VALID_AUL and total_saham in VALID_AUL[AM_awal]:
+        notes.append(f"Terjadi Aul: total saham {total_saham} > AM awal {AM_awal}. AM akhir = {total_saham}.")
+        return total_saham
+    return AM_awal
 
-# --------------------------
-# AUL guard
-# --------------------------
-def _maybe_apply_aul(AM_awal: int, total_saham: int, notes: List[str]) -> Tuple[str, int]:
-    """
-    Putuskan Aul sesuai daftar valid. Jika tidak valid, kembalikan Adil + catatan peringatan.
-    """
-    if total_saham > AM_awal:
-    # Semua Aul valid secara syar'i
-        notes.append(f"Terjadi Aul: total saham {total_saham} > AM awal {AM_awal}")
-        if AM_awal in VALID_AUL and total_saham in VALID_AUL[AM_awal]:
-            notes.append(f"Aul ini adalah kasus klasik yang umum")
-        notes.append(f"Ashlul Mas'alah diganti: dari {AM_awal} menjadi AM akhir {total_saham}")
-        return "Aul", total_saham
 
-# --------------------------
-# RADD 3 skenario
-# --------------------------
-def _apply_radd(AM_awal: int,
-                total_saham_dasar: int,
-                furudh_items: List[schemas.FurudhItem],
-                saham_map: Dict[int, int],
-                notes: List[str]) -> Tuple[str, int, Dict[int, int]]:
-    """
-    Terapkan Radd sesuai kitab:
-      1) Tanpa زوج/زوجة → AM akhir = total_saham.
-      2) Ada زوج/زوجة dan hanya 1 ahli waris lain → AM akhir = penyebut زوج/زوجة, pasangan fix, sisa ke yang satu itu.
-      3) Ada زوج/زوجة dan ahli waris lain ≥2 → AM akhir = penyebut زوج/زوجة,
-         lalu ‘kelompok radd’ menerima sisa proporsional saham_dasar (dengan tashih inkisar jika perlu).
-    """
-    # pasangan?
-    spouses = [f for f in furudh_items if _is_spouse(f.heir.id)]
-    others  = [f for f in furudh_items if not _is_spouse(f.heir.id) and f.fraction != "Ashobah"]  # radd berlaku untuk dzawi al-furudh (bukan ashabah)
-
-    if not spouses:
-        # Radd tanpa pasangan
-        notes.append(f"Radd tanpa زوج/زوجة: total saham {total_saham_dasar} dijadikan Ashlul Mas’alah → {total_saham_dasar}.")
-        return "Radd", total_saham_dasar, saham_map
-
-    # Ada pasangan
-    spouse = spouses[0]
-    spouse_den = spouse.denominator if spouse.denominator > 0 else AM_awal
-    # saham pasangan fix pada AM spouse_den:
-    spouse_saham_fix = (spouse_den // spouse.denominator) * spouse.numerator if spouse.denominator > 0 else 0
-
-    if len(others) == 1:
-        # pasangan + 1 ahli waris lain
-        other = others[0]
-        AM_akhir = spouse_den
-        sisa = AM_akhir - spouse_saham_fix
-        # tetapkan pasangan
-        saham_map[spouse.heir.id] = spouse_saham_fix
-        # sisa untuk yang satu itu
-        saham_map[other.heir.id] = sisa
-        notes.append(
-            f"Radd dengan زوج/زوجة & satu penerima: penyebut زوج/زوجة = {spouse_den} dijadikan AM. "
-            f"Bagian {spouse.heir.name_id} = {spouse_saham_fix}; sisa {sisa} diberikan seluruhnya kepada {other.heir.name_id}."
-        )
-        return "Radd", AM_akhir, saham_map
-
-    # pasangan + banyak ahli
-    AM_akhir = spouse_den
-    sisa = AM_akhir - spouse_saham_fix
-    saham_map[spouse.heir.id] = spouse_saham_fix
-
-    # Hitung bobot radd proporsional dari saham_dasar (pakai saham dasar non-zero)
-    radd_targets = [f for f in others if saham_map.get(f.heir.id, 0) > 0]
-    sum_dasar = sum(saham_map.get(f.heir.id, 0) for f in radd_targets)
-
-    if sum_dasar == 0:
-        # jika tidak ada dasar (semua 0), bagi rata per kepala
-        kepala = sum(f.quantity for f in radd_targets)
-        # cek inkisar: sisa % kepala
-        g = gcd(sisa, kepala)
-        k = kepala // g
-        if k > 1:
-            AM_before = AM_akhir
-            AM_akhir *= k
-            spouse_saham_fix *= k
-            sisa *= k
-            saham_map[spouse.heir.id] = spouse_saham_fix
-            notes.append(
-                f"Radd (pasangan + banyak, bagi rata): sisa tidak habis oleh jumlah kepala {kepala} → tashīḥ ×{k}. "
-                f"AM akhir: {AM_before} × {k} = {AM_akhir}"
-            )
-        # bagi rata per kepala
-        for f in radd_targets:
-            dasar = saham_map.get(f.heir.id, 0)
-            if _is_group_two_thirds(f):
-                dasar = dasar / f.quantity  # per-orang
-            sum_dasar += dasar * f.quantity
-        notes.append(f"Radd (pasangan + banyak): dibagi rata per kepala (kepala={kepala}).")
-        return "Radd", AM_akhir, saham_map
-
-    # proporsional sesuai saham dasar
-    # cek inkisar: sisa % sum_dasar
-    g = gcd(sisa, sum_dasar)
-    k = sum_dasar // g
-    if k > 1:
-        AM_before = AM_akhir
-        AM_akhir *= k
-        spouse_saham_fix *= k
-        sisa *= k
-        # skala seluruh saham existing (termasuk pasangan yg sudah ditetapkan)
-        for hid in list(saham_map.keys()):
-            saham_map[hid] *= k
-        notes.append(
-            f"Radd (pasangan + banyak, proporsional): sisa tidak habis oleh jumlah dasar {sum_dasar} → tashīḥ ×{k}. "
-            f"AM akhir: {AM_before} × {k} = {AM_akhir}"
-        )
-
-    for f in radd_targets:
-        dasar = saham_map.get(f.heir.id, 0)
-        bagian = (sisa * dasar) // sum_dasar
-        saham_map[f.heir.id] = bagian
-
-    notes.append(
-        f"Radd (pasangan + banyak): sisa {sisa} dibagi proporsional dengan dasar {sum_dasar}."
-    )
-    return "Radd", AM_akhir, saham_map
-
-# ============================================================
-#                    FUNGSI UTAMA
-# ============================================================
+# =========================
+# Fungsi Utama
+# =========================
 def calculate_inheritance(db: Session, calculation_input: schemas.CalculationInput) -> schemas.CalculationResult:
     heirs = calculation_input.heirs
     tirkah = calculation_input.tirkah
@@ -376,124 +128,258 @@ def calculate_inheritance(db: Session, calculation_input: schemas.CalculationInp
     notes: List[str] = []
     shares: List[schemas.HeirShare] = []
 
+    # --- DEFAULT calc_mode
+    calc_mode = {"mode": "normal"}
+
     # 1) Tentukan furudh
     notes.append("Menentukan furudh ahli waris sesuai ketentuan syar’i")
     furudh_items = determine_furudh(db, heirs)
-    present_ids = {h.id for h in heirs}
-    already_listed_ids = {f.heir.id for f in furudh_items}
 
-    # 2) Ambil semua penyebut furudh untuk hitung Ashl
-    denominators = [
-        f.denominator for f in furudh_items
-        if f.fraction != "Ashobah" and f.denominator > 0
-    ]
+    # 1b) Kasus-kasus khusus (Akdariyyah, al-‘Add, Jadd-Ikhwah)
+    furudh_items, special_notes, calc_mode = apply_special_cases(db, heirs, furudh_items)
+    notes.extend(special_notes)
+
+    # 2) Ambil penyebut furudh
+    denominators = [f.denominator for f in furudh_items if f.fraction != "Ashobah" and f.denominator > 0]
+    ashl_info = compute_ashl(denominators)
+
+    # ============================================================
+    # CABANG: Tidak ada furudh tetap (denominators kosong)
+    # ============================================================
     if not denominators:
-        ashobah_items = [f for f in furudh_items if f.fraction == "Ashobah"]
-        if ashobah_items:
+        mode = calc_mode.get("mode", "normal")
+
+        # ---------- MODE KHUSUS: Jadd ma‘al-Ikhwah ----------
+        if mode == "jadd_ikhwah":
+            notes.append("Kasus Jadd ma‘al-Ikhwah: membandingkan 3 opsi (muqāsamah, 1/3 sisa, 1/6 total).")
+
+            # Kepala untuk muqāsamah: Jadd = 2, Ikhwah: lk=2, pr=1
+            head_jadd = 2  # Jadd dihitung laki-laki
+            male_sibs = sum(f.quantity for f in furudh_items if f.fraction == "Ashobah" and f.heir.id in {7, 8})
+            female_sibs = sum(f.quantity for f in furudh_items if f.fraction == "Ashobah" and f.heir.id in {21, 22})
+            head_sibs = 2 * male_sibs + 1 * female_sibs
+
+            if head_sibs == 0:
+                # tidak ada saudara → jadd ashabah penuh
+                AM = head_jadd
+                ashl_info = schemas.AshlInfo(ashl_awal=AM, ashl_akhir=AM, comparisons=[], total_saham=AM, status="Adil")
+                saham_map: Dict[int, int] = {6: head_jadd}
+                notes.append(f"Tidak ada saudara; Jadd menjadi Ashobah penuh. AM = {AM}.")
+            else:
+                # Bandingkan 3 opsi dengan porsi dari TOTAL (karena tidak ada fard)
+                frac_muq = Fraction(head_jadd, head_jadd + head_sibs)  # porsi Jadd bila muqāsamah
+                frac_1_3 = Fraction(1, 3)
+                frac_1_6 = Fraction(1, 6)
+                best = max([("muqasamah", frac_muq), ("one_third_resid", frac_1_3), ("one_sixth_total", frac_1_6)],
+                           key=lambda x: x[1])
+
+                saham_map = {}
+                if best[0] == "muqasamah":
+                    # AM = jumlah kepala (2:1)
+                    AM = head_jadd + head_sibs
+                    ashl_info = schemas.AshlInfo(ashl_awal=AM, ashl_akhir=AM, comparisons=[], total_saham=AM, status="Adil")
+                    # Jadd
+                    saham_map[6] = head_jadd
+                    # Saudara (bobot 2:1)
+                    for f in furudh_items:
+                        if f.heir.id in {7, 8}:
+                            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + 2 * f.quantity
+                        if f.heir.id in {21, 22}:
+                            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + 1 * f.quantity
+                    notes.append(f"Memilih muqāsamah: Jadd {frac_muq} (> 1/3, > 1/6). AM = {AM} (jumlah kepala).")
+
+                elif best[0] == "one_third_resid":
+                    # Jadd = 1/3 total; saudara = 2/3 total proporsional 2:1
+                    AM = _lcm(3, head_sibs) or 3 * head_sibs
+                    jadd_shares = AM // 3
+                    sib_total = AM - jadd_shares
+                    per_head = sib_total // head_sibs
+
+                    saham_map[6] = jadd_shares
+                    for f in furudh_items:
+                        if f.heir.id in {7, 8}:
+                            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + (2 * f.quantity) * per_head
+                        if f.heir.id in {21, 22}:
+                            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + (1 * f.quantity) * per_head
+
+                    ashl_info = schemas.AshlInfo(ashl_awal=AM, ashl_akhir=AM, comparisons=[], total_saham=AM, status="Adil")
+                    notes.append(f"Memilih 1/3 sisa: AM ditashīḥ menjadi {AM} agar bulat.")
+
+                else:  # "one_sixth_total"
+                    AM = _lcm(6, head_sibs) or 6 * head_sibs
+                    jadd_shares = AM // 6
+                    sib_total = AM - jadd_shares
+                    per_head = sib_total // head_sibs
+
+                    saham_map[6] = jadd_shares
+                    for f in furudh_items:
+                        if f.heir.id in {7, 8}:
+                            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + (2 * f.quantity) * per_head
+                        if f.heir.id in {21, 22}:
+                            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + (1 * f.quantity) * per_head
+
+                    ashl_info = schemas.AshlInfo(ashl_awal=AM, ashl_akhir=AM, comparisons=[], total_saham=AM, status="Adil")
+                    notes.append(f"Memilih 1/6 total: AM ditashīḥ menjadi {AM} agar bulat.")
+
+            # ---- Bangun output final dari saham_map + AM ----
+            total_saham = sum(saham_map.values())
+            for f in furudh_items:
+                if f.heir.id in saham_map:
+                    saham = saham_map[f.heir.id]
+                    amount = (saham / ashl_info.ashl_akhir) * tirkah
+                    if f.quantity == 1:
+                        notes.append(f"{f.heir.name_id} = {saham} × {tirkah:,.0f} ÷ {ashl_info.ashl_akhir} = Rp {amount:,.0f}")
+                    else:
+                        per_orang = amount / f.quantity
+                        notes.append(f"{f.heir.name_id} ({f.quantity} orang) = {saham} × {tirkah:,.0f} ÷ {ashl_info.ashl_akhir} = Rp {amount:,.0f} → masing-masing Rp {per_orang:,.0f}")
+                    shares.append(schemas.HeirShare(
+                        heir=f.heir, quantity=f.quantity, share_fraction="Ashobah",
+                        saham=saham, reason=f.reason, share_amount=round(amount, 2)
+                    ))
+
+            # tampilkan mahjūb (mis. ukht seayah yang akhirnya 0 karena hijāb)
+            shares.extend(_append_mahjub_shares(db, heirs, furudh_items, notes))
+
+            return schemas.CalculationResult(
+                tirkah=tirkah,
+                ashlul_masalah_awal=ashl_info.ashl_awal,
+                ashlul_masalah_akhir=ashl_info.ashl_akhir,
+                total_saham=total_saham,
+                status="Adil",
+                notes=notes,
+                shares=shares
+            )
+
+        # ---------- MODE NORMAL: Semua Ashobah ----------
+        all_ashabah = all(f.fraction == "Ashobah" for f in furudh_items)
+        if all_ashabah:
+            # bobot: kalau CAMPUR (ada perempuan) → lk=2, pr=1; kalau SEMUA laki-laki → bobot=1 per orang
+            any_female = any(f.heir.id in FEMALE_ASABAH_IDS for f in furudh_items)
+            saham_map: Dict[int, int] = {}
             total_bobot = 0
-            for f in ashobah_items:
-                wpc = 2 if _is_male_asabah_id(f.heir.id) else 1
-                total_bobot += wpc * f.quantity
-            AM_awal = total_bobot
-            ashl_info = schemas.AshlInfo(
-                ashl_awal=AM_awal,
-                ashl_akhir=AM_awal,
-                comparisons=[],
-                total_saham=AM_awal,  # TAMBAHKAN INI
-                status="Adil"          # TAMBAHKAN INI
-            )
-            notes.append(f"Semua ahli waris adalah Ashobah → Ashlul Mas'alah = total bobot = {AM_awal}")
-        else:
-            ashl_info = schemas.AshlInfo(
-                ashl_awal=1, 
-                ashl_akhir=1, 
-                comparisons=[],
-                total_saham=0,  # TAMBAHKAN INI
-                status="Adil"   # TAMBAHKAN INI
-            )
-    else:
-        ashl_info = compute_ashl(denominators)
-        AM_awal = ashl_info.ashl_awal
-        ashl_info.ashl_akhir = AM_awal
-        # Pastikan ashl_info dari compute_ashl juga punya field ini
-        if not hasattr(ashl_info, 'total_saham'):
-            ashl_info.total_saham = 0  # placeholder
-        if not hasattr(ashl_info, 'status'):
-            ashl_info.status = "Adil"  # placeholder
-        notes.append(f"Menentukan Ashlul Mas'alah: {AM_awal}")
+            for f in furudh_items:
+                if any_female:
+                    wpc = 2 if _is_male_asabah_id(f.heir.id) else 1
+                else:
+                    wpc = 1  # semua laki-laki → 1 per orang
+                saham = wpc * f.quantity
+                saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + saham
+                total_bobot += saham
 
-    # Catatan perbandingan penyebut (opsional: kalau compute_ashl mengembalikan)
-    if getattr(ashl_info, "comparisons", None):
-        for c in ashl_info.comparisons:
-            notes.append(f"Penyebut {c.a} & {c.b} = {c.relation}")
+            AM = total_bobot
+            ashl_info = schemas.AshlInfo(ashl_awal=AM, ashl_akhir=AM, comparisons=[], total_saham=AM, status="Adil")
+            notes.append(f"Semua ahli waris adalah Ashobah → Ashlul Mas'alah = total bobot = {AM}")
 
-    # 3) Hitung saham dasar non-Ashobah
+            for f in furudh_items:
+                saham = saham_map[f.heir.id]
+                amount = (saham / AM) * tirkah
+                if f.quantity == 1:
+                    notes.append(f"{f.heir.name_id} = {saham} × {tirkah:,.0f} ÷ {AM} = Rp {amount:,.0f}")
+                else:
+                    per_orang = amount / f.quantity
+                    notes.append(f"{f.heir.name_id} ({f.quantity} orang) = {saham} × {tirkah:,.0f} ÷ {AM} = Rp {amount:,.0f} → masing-masing Rp {per_orang:,.0f}")
+                shares.append(schemas.HeirShare(
+                    heir=f.heir, quantity=f.quantity, share_fraction="Ashobah",
+                    saham=saham, reason=f.reason, share_amount=round(amount, 2)
+                ))
+
+            shares.extend(_append_mahjub_shares(db, heirs, furudh_items, notes))
+
+            return schemas.CalculationResult(
+                tirkah=tirkah,
+                ashlul_masalah_awal=AM,
+                ashlul_masalah_akhir=AM,
+                total_saham=AM,
+                status="Adil",
+                notes=notes,
+                shares=shares
+            )
+
+        # (kalau tidak masuk dua cabang di atas, jatuh ke alur umum di bawah)
+
+    # ============================================================
+    # CABANG UMUM: Ada furudh tetap → hitung AM, saham furudh, sisa, dst.
+    # ============================================================
+    AM_awal = ashl_info.ashl_awal
+    notes.append(f"Menentukan Ashlul Mas’alah: {AM_awal}")
+
+    # Tambahkan perbandingan antar penyebut (kalau ada)
+    for c in ashl_info.comparisons:
+        notes.append(f"Penyebut {c.a} & {c.b} = {c.relation}")
+
+    # 3) Hitung saham furudh (non-Ashobah)
     saham_map: Dict[int, int] = {}
-    total_saham_dasar = 0
+    total_saham_furudh = 0
+    ashobah_items: List[schemas.FurudhItem] = []
 
     for f in furudh_items:
         if f.fraction != "Ashobah":
-            if _is_group_two_thirds(f):
-                # BAGIAN GOLONGAN → tidak dikali quantity
-                saham_golongan = (AM_awal // f.denominator) * f.numerator
-                saham_per_orang = saham_golongan / f.quantity  # bisa pecahan
-                saham_map[f.heir.id] = saham_golongan
-                total_saham_dasar += saham_golongan
-                notes.append(f"{f.heir.name_id}: {saham_golongan} saham karena 2/3 dari {AM_awal} (bagian golongan)")
+            saham_per_orang = (AM_awal // f.denominator) * f.numerator
+            saham_total = saham_per_orang * f.quantity
+            saham_map[f.heir.id] = saham_map.get(f.heir.id, 0) + saham_total
+            total_saham_furudh += saham_total
+            if f.quantity == 1:
+                notes.append(f"{f.heir.name_id}: {saham_per_orang} saham karena {f.fraction} dari {AM_awal}")
             else:
-                saham_per_unit = (AM_awal // f.denominator) * f.numerator
-                saham_total_kel = saham_per_unit * f.quantity
-                saham_map[f.heir.id] = saham_total_kel
-                total_saham_dasar += saham_total_kel
-                if f.quantity == 1:
-                    notes.append(f"{f.heir.name_id}: {saham_per_unit} saham karena {f.fraction} dari {AM_awal}")
-                else:
-                    notes.append(f"{f.heir.name_id}: {saham_total_kel} saham karena {f.fraction} dari {AM_awal} (dibagi {f.quantity} orang)")
+                notes.append(f"{f.heir.name_id}: {saham_total} saham karena {f.fraction} (kelompok) dari {AM_awal}")
         else:
-            saham_map[f.heir.id] = 0  # placeholder untuk Ashobah
+            ashobah_items.append(f)
 
-    # 4) Hitung sisa dan distribusi Ashobah
-    sisa = AM_awal - total_saham_dasar
-    ashobah_items = [f for f in furudh_items if f.fraction == "Ashobah"]
+    # 4) Hitung sisa untuk Ashobah (kalau ada)
+    sisa = AM_awal - total_saham_furudh
+    AM_akhir = AM_awal
 
     if ashobah_items and sisa > 0:
-        tambahan = _distribute_ashobah_mixed(ashl_info, ashobah_items, sisa, saham_map, notes)
-        total_saham_dasar += tambahan
+        if len(ashobah_items) == 1:
+            # 1 Ashobah → ambil semua sisa
+            sole = ashobah_items[0]
+            saham_map[sole.heir.id] = saham_map.get(sole.heir.id, 0) + sisa
+            notes.append(f"{sole.heir.name_id} mendapat sisa {sisa} saham sebagai Ashobah")
+        else:
+            # Ashobah campur 2:1
+            # Jika sisa tidak habis terhadap bobot, lakukan tashīḥ (mengubah AM)
+            male_heads = sum(2 * f.quantity for f in ashobah_items if f.heir.id in MALE_ASABAH_IDS)
+            female_heads = sum(1 * f.quantity for f in ashobah_items if f.heir.id in FEMALE_ASABAH_IDS)
+            total_heads = male_heads + female_heads
+            if total_heads > 0 and sisa % total_heads != 0:
+                k = total_heads // gcd(sisa, total_heads)
+                notes.append(f"Inkisār Ashobah: sisa = {sisa}, total bobot = {total_heads} → tashīḥ ×{k}. AM akhir: {AM_akhir} × {k} = {AM_akhir * k}")
+                # skala saham furudh yang sudah ada
+                for hid in list(saham_map.keys()):
+                    saham_map[hid] *= k
+                sisa *= k
+                AM_akhir *= k
+            # distribusi
+            _distribute_ashobah_mixed(ashobah_items, sisa, saham_map, notes)
 
-    # 5) Status (Adil / Aul / Radd) — lalu inkisār umum
-    if total_saham_dasar == AM_awal:
-        status = "Adil"
-        AM_akhir = AM_awal
-        notes.append("Tidak terjadi perubahan, total saham = AM awal → masalah Adil")
-    elif total_saham_dasar > AM_awal:
-        status, AM_akhir = _maybe_apply_aul(AM_awal, total_saham_dasar, notes)
-    else:
-        # Radd
-        status, AM_akhir, saham_map = _apply_radd(AM_awal, total_saham_dasar, furudh_items, saham_map, notes)
-
-    # ==== Inkisār (tashīḥ bila perlu) ====
-    AM_akhir = _apply_inkisar(AM_akhir, furudh_items, saham_map, notes)
-    ashl_info.ashl_akhir = AM_akhir
-
-    # total saham final setelah semua penyesuaian
+    # 5) Tentukan status (Adil/Aul/Radd)
     total_saham_final = sum(saham_map.values())
+    status = "Adil"
+    if total_saham_final > AM_akhir:
+        # Aul hanya kalau ada di tabel valid
+        new_AM = _handle_aul(AM_akhir, total_saham_final, notes)
+        if new_AM != AM_akhir:
+            AM_akhir = new_AM
+            status = "Aul"
+        else:
+            # jika tidak valid, anggap adil (sesuai permintaan sebelumnya)
+            notes.append(f"⚠️ Total saham {total_saham_final} tidak sesuai daftar Aul untuk AM {AM_akhir} → dianggap Adil (AM tetap).")
+            status = "Adil"
+    elif total_saham_final < AM_akhir:
+        # Radd sederhana: AM akhir = total_saham_final, kecuali ada pasangan + pola khusus (sudah kamu buat di modul radd)
+        status = "Radd"
+        AM_akhir = total_saham_final
+        notes.append(f"Terjadi Radd: total saham {total_saham_final} < AM awal {ashl_info.ashl_awal}. AM akhir: {AM_akhir}")
 
     # 6) Hitung nominal akhir + catatan rumus
     for f in furudh_items:
         saham_final = saham_map.get(f.heir.id, 0)
-        uang_total = (saham_final / AM_akhir) * tirkah if AM_akhir else 0.0
-
-        # Catatan informatif ala kitab
+        amount = (saham_final / AM_akhir) * tirkah if AM_akhir else 0.0
         if f.quantity == 1:
-            notes.append(
-                f"{f.heir.name_id} = {saham_final} × {tirkah:,.0f} ÷ {AM_akhir} = Rp {uang_total:,.0f}"
-            )
+            notes.append(f"{f.heir.name_id} = {saham_final} × {tirkah:,.0f} ÷ {AM_akhir} = Rp {amount:,.0f}")
         else:
-            per_orang = uang_total / f.quantity if f.quantity else 0.0
-            notes.append(
-                f"{f.heir.name_id} ({f.quantity} orang) = {saham_final} × {tirkah:,.0f} ÷ {AM_akhir} = Rp {uang_total:,.0f} → masing-masing Rp {per_orang:,.0f}"
-            )
-
+            per_orang = (amount / f.quantity) if f.quantity else 0.0
+            notes.append(f"{f.heir.name_id} ({f.quantity} orang) = {saham_final} × {tirkah:,.0f} ÷ {AM_akhir} = Rp {amount:,.0f} → masing-masing Rp {per_orang:,.0f}")
         shares.append(
             schemas.HeirShare(
                 heir=f.heir,
@@ -501,18 +387,20 @@ def calculate_inheritance(db: Session, calculation_input: schemas.CalculationInp
                 share_fraction=f.fraction,
                 saham=saham_final,
                 reason=f.reason,
-                share_amount=round(uang_total, 2),
+                share_amount=round(amount, 2)
             )
         )
+
+    # 7) Tambahkan mahjūb (supaya transparan)
     shares.extend(_append_mahjub_shares(db, heirs, furudh_items, notes))
 
-    # 7) Return
+    # 8) Return
     return schemas.CalculationResult(
         tirkah=tirkah,
-        ashlul_masalah_awal=AM_awal,
+        ashlul_masalah_awal=ashl_info.ashl_awal,
         ashlul_masalah_akhir=AM_akhir,
-        total_saham=total_saham_final,
+        total_saham=sum(saham_map.values()),
         status=status,
         notes=notes,
-        shares=shares,
+        shares=shares
     )

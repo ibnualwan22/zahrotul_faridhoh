@@ -49,6 +49,40 @@ ID = {
     "MUTIQAH": 25,               # Wanita Pembebas Budak
 }
 
+def _blocked_ikhwah_by_desc_or_father(heirs_input: List[Heir]) -> bool:
+    """
+    Ikhwah (saudara/saudari) terhalang oleh: adanya keturunan laki-laki atau AYAH.
+    Catatan penting: KAKEK TIDAK menghalangi ikhwah pada bab Jadd ma‘al-Ikhwah.
+    """
+    has_son_or_grandson = _exists(heirs_input, ID["IBN"]) or _exists(heirs_input, ID["IBN_IBN"])
+    has_father = _exists(heirs_input, ID["AB"])
+    return has_son_or_grandson or has_father
+
+def _has_any_children(heirs_input: List[Heir]) -> bool:
+    return (
+        _exists(heirs_input, ID["IBN"]) or
+        _exists(heirs_input, ID["BINT"]) or
+        _exists(heirs_input, ID["IBN_IBN"]) or
+        _exists(heirs_input, ID["BINT_IBN"])
+    )
+
+def _has_male_agnet(heirs_input: List[Heir]) -> bool:
+    # sama seperti punyamu
+    return any([
+        _exists(heirs_input, ID["IBN"]),
+        _exists(heirs_input, ID["IBN_IBN"]),
+        _exists(heirs_input, ID["AB"]),
+        _exists(heirs_input, ID["JADD"]),
+        _exists(heirs_input, ID["AKH_ABAWAYN"]),
+        _exists(heirs_input, ID["AKH_AB"]),
+        _exists(heirs_input, ID["IBN_AKH_ABAWAYN"]),
+        _exists(heirs_input, ID["IBN_AKH_AB"]),
+        _exists(heirs_input, ID["AMM_ABAWAYN"]),
+        _exists(heirs_input, ID["AMM_AB"]),
+        _exists(heirs_input, ID["IBN_AMM_ABAWAYN"]),
+        _exists(heirs_input, ID["IBN_AMM_AB"]),
+    ])
+
 # =========================
 # Helper buat FurudhItem
 # =========================
